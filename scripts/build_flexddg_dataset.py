@@ -10,10 +10,10 @@ from tap import tapify
 def build_flexddg_dataset(json_path: Path, ddg_path: Path, save_path: Path) -> None:
     """
     Build a Flex ddG dataset by extracting antibody and antigen chain sequences
-    for each mutation entry in the ddG CSV, using the provided FASTA file.
+    for each mutation entry in the ddG CSV, using the provided   file.
 
     Args:
-        fasta_path (Path): Path to the FASTA file containing sequences.
+        json_path (Path): Path to the JSON file containing sequences.
         ddg_path (Path): Path to the CSV file with ddG mutation data.
         save_path (Path): Path to save the resulting CSV with sequences.
     """
@@ -28,6 +28,8 @@ def build_flexddg_dataset(json_path: Path, ddg_path: Path, save_path: Path) -> N
     ab_chain1 = []
     ab_chain2 = []
     ag_chains = []
+    mut_indices = []
+    mut_chains = []
     fail_count = 0
 
     # Iterate over each row in the DataFrame
@@ -63,10 +65,14 @@ def build_flexddg_dataset(json_path: Path, ddg_path: Path, save_path: Path) -> N
         ag_chains.append(
             complex_to_sequence_dict[f"{complex_id}_{ag_chain}"]["sequence"]
         )
+        mut_indices.append(mut_index)
+        mut_chains.append(chain_id)
 
     df["ab_chain1_seq"] = ab_chain1
     df["ab_chain2_seq"] = ab_chain2
     df["ag_chain_seq"] = ag_chains
+    df["mut_index"] = mut_indices
+    df["mut_chain"] = mut_chains
 
     # Save the updated DataFrame to CSV
     df.to_csv(save_path, index=False)

@@ -51,7 +51,9 @@ def parse_fasta_sequences(fasta_file: Path) -> tuple[list[str], list[str]]:
     return sequence_descriptions, sequence_strings
 
 
-def load_esm_model(esm_model: str, hub_dir: str | None = None) -> tuple:
+def load_esm_model(
+    esm_model: str = "esm2_t33_650M_UR50D", hub_dir: str | None = None
+) -> tuple:
     """Load an ESM2 model and batch converter.
 
     :param esm_model: Pretrained ESM2 model to use. See options at https://github.com/facebookresearch/esm.
