@@ -3,6 +3,7 @@ Uses the masked marginals scoring method from https://www.biorxiv.org/content/10
 Code adapted from https://github.com/facebookresearch/esm/blob/main/examples/variant-prediction/predict.py.
 """
 
+from os import name
 from pathlib import Path
 from typing import Literal
 
@@ -11,29 +12,25 @@ import pandas as pd
 import torch
 from tap import tapify
 from tqdm import tqdm, trange
+from scipy.stats import spearmanr
+from matplotlib import pyplot as plt
 
-from esm_embedding import load_esm_model
-
-# Amino acid constants
-AA_ALPHABET = "ACDEFGHIKLMNPQRSTVWY"
-AA_ALPHABET_SET = set(AA_ALPHABET)
-AA_TO_INDEX = {aa: index for index, aa in enumerate(AA_ALPHABET)}
-GLYCINE_LINKER_LENGTH = 25
+from utils import GLYCINE_LINKER_LENGTH
 
 
-def parse_csv_with_sequences(
-    csv_path: Path, sequence_type: Literal["single_chain", "triple_chain"]
+def parse_df_with_sequences(
+    df: pd.DataFrame, sequence_type: Literal["single_chain", "triple_chain"]
 ) -> tuple[list[str], list[str]]:
     """
     Parse a CSV file with sequences and extract sequence descriptions and sequences.
     """
-    df = pd.read_csv(csv_path)
 
     names, sequences, mut_indices, wt_aas, mut_aas = [], [], [], [], []
     for row in df.itertuples():
         pdb_id, ab_chain, ag_chain, mutation = row.complex.split("_")
         wt_aas.append(mutation[0])
         mut_aas.append(mutation[-1])
+        names.append(f"{row.complex}")
 
         if sequence_type == "single_chain":
             if row.mut_chain == ab_chain[0]:
@@ -45,7 +42,6 @@ def parse_csv_with_sequences(
             else:
                 raise ValueError(f"Invalid mutation chain: {row.mut_chain}")
             sequences.append(sequence)
-            names.append(f"{row.complex}_{row.mut_chain}")
             mut_indices.append(row.mut_index)
 
         elif sequence_type == "triple_chain":
@@ -72,7 +68,6 @@ def parse_csv_with_sequences(
                 sequence += "G" * GLYCINE_LINKER_LENGTH
                 sequence += row.ab_chain2_seq
             sequences.append(sequence)
-            names.append(f"{row.complex}")
         else:
             raise ValueError(f"Invalid sequence type: {sequence_type}")
 
@@ -80,7 +75,7 @@ def parse_csv_with_sequences(
 
 
 def generate_likelihood_ratios(
-    sequences_path: Path,
+    ddg_df: pd.DataFrame,
     sequence_type: Literal["single_chain", "triple_chain"],
     batch_size: int = 32,
     device: str = "cuda",
@@ -92,8 +87,8 @@ def generate_likelihood_ratios(
     """
     # Load ESM-2 model
     model, alphabet, batch_converter = load_esm_model()
-    names, sequences, mut_indices, wt_aas, mut_aas = parse_csv_with_sequences(
-        sequences_path, sequence_type
+    names, sequences, mut_indices, wt_aas, mut_aas = parse_df_with_sequences(
+        ddg_df, sequence_type
     )
     sequence_tuples = list(zip(names, sequences))
 
@@ -111,13 +106,14 @@ def generate_likelihood_ratios(
                 batch_sequence_tuples
             )
             batch_mut_indices = torch.tensor(mut_indices[i : i + batch_size])
+            batch_wt_aas = wt_aas[i : i + batch_size]
             batch_wt_aas = torch.tensor(
-                [alphabet.get_idx(wt_aas[k]) for k in range(i, i + batch_size)]
+                [alphabet.get_idx(wt_aa) for wt_aa in batch_wt_aas]
             )
+            batch_mut_aas = mut_aas[i : i + batch_size]
             batch_mut_aas = torch.tensor(
-                [alphabet.get_idx(mut_aas[k]) for k in range(i, i + batch_size)]
+                [alphabet.get_idx(mut_aa) for mut_aa in batch_mut_aas]
             )
-            breakpoint()
             batch_tokens[:, batch_mut_indices] = alphabet.mask_idx
 
             batch_token_probs = torch.log_softmax(
@@ -141,6 +137,51 @@ def generate_likelihood_ratios(
     return name_to_likelihood_ratio
 
 
-if __name__ == "__main__":
+def compare_ddg_to_likelihood_ratios(
+    name_to_likelihood_ratio: dict[str, float],
+    ddg_df: pd.DataFrame,
+    sequence_type: Literal["single_chain", "triple_chain"],
+) -> None:
+    """Compare likelihood ratios to ddG values."""
 
-    tapify(generate_likelihood_ratios)
+    likelihood_ratios = []
+    ddgs = []
+
+    for row in ddg_df.itertuples():
+        name = row.complex
+        ddg = row.labels
+        likelihood_ratio = name_to_likelihood_ratio[name]
+        likelihood_ratios.append(likelihood_ratio)
+        ddgs.append(ddg)
+
+    # compute spearman correlation
+    correlation, p_value = spearmanr(likelihood_ratios, ddgs)
+    print(f"Spearman correlation: {correlation:.4f}")
+    print(f"P-value: {p_value:.4f}")
+
+    # plot scatter plot of likelihood ratios vs ddGs
+    plt.scatter(likelihood_ratios, ddgs)
+    plt.xlabel("Likelihood ratio")
+    plt.ylabel("ddG")
+    plt.title(f"Zero-shot ESM-2 ddG prediction, {sequence_type} sequences")
+    # add line of best fit
+
+    plt.savefig(f"plots/likelihood_ratios_vs_ddgs_{sequence_type}.png")
+
+
+def zero_shot_esm_ddg(
+    data_path: Path,
+    sequence_type: Literal["single_chain", "triple_chain"],
+    batch_size: int = 32,
+    device: str = "cuda",
+) -> None:
+
+    ddg_df = pd.read_csv(data_path)
+    name_to_likelihood_ratio = generate_likelihood_ratios(
+        ddg_df, sequence_type, batch_size, device
+    )
+    compare_ddg_to_likelihood_ratios(name_to_likelihood_ratio, ddg_df, sequence_type)
+
+
+if __name__ == "__main__":
+    tapify(zero_shot_esm_ddg)

@@ -3,33 +3,60 @@
 from time import time
 from pathlib import Path
 import pandas as pd
-
+from typing import Literal
+from tap import tapify
 import torch
 from Bio import SeqIO
 from tap import Tap
 from tqdm import trange
 
+from utils import GLYCINE_LINKER_LENGTH, load_esm_model
 
-def parse_csv_with_sequences(csv_path: Path) -> tuple[list[str], list[str]]:
+
+def parse_csv_with_sequences(
+    csv_path: Path, sequence_type: Literal["separate_chains", "joined_chains"]
+) -> tuple[list[str], list[str]]:
     """
     Parse a CSV file with sequences and extract sequence descriptions and sequences.
     """
     df = pd.read_csv(csv_path)
-    # antibody chain 1
-    ab_chain1_seqs = df["ab_chain1_seq"].tolist()
-    names_ab_chain1 = [f"{row.complex}_{row.ab_chain[0]}" for row in df.itertuples()]
-    # antibody chain 2
-    df2 = df.dropna(subset="ab_chain2_seq")
-    ab_chain2_seqs = df2["ab_chain2_seq"].tolist()
-    names_ab_chain2 = [f"{row.complex}_{row.ab_chain[1]}" for row in df2.itertuples()]
-    # antigen chain
-    ag_chains = df["ag_chain_seq"].tolist()
-    names_ag = [f"{row.complex}_{row.ag_chain}" for row in df.itertuples()]
+    if sequence_type == "separate_chains":
+        # antibody chain 1
+        ab_chain1_seqs = df["ab_chain1_seq"].tolist()
+        names_ab_chain1 = [
+            f"{row.complex}_{row.ab_chain[0]}" for row in df.itertuples()
+        ]
+        # antibody chain 2
+        df2 = df.dropna(subset="ab_chain2_seq")
+        ab_chain2_seqs = df2["ab_chain2_seq"].tolist()
+        names_ab_chain2 = [
+            f"{row.complex}_{row.ab_chain[1]}" for row in df2.itertuples()
+        ]
+        # antigen chain
+        ag_chains = df["ag_chain_seq"].tolist()
+        names_ag = [f"{row.complex}_{row.ag_chain}" for row in df.itertuples()]
 
-    # combine a single list of names and sequences
-    names = names_ab_chain1 + names_ab_chain2 + names_ag
-    sequences = ab_chain1_seqs + ab_chain2_seqs + ag_chains
-    return names, sequences
+        # combine a single list of names and sequences
+        names = names_ab_chain1 + names_ab_chain2 + names_ag
+        sequences = ab_chain1_seqs + ab_chain2_seqs + ag_chains
+        return names, sequences
+
+    elif sequence_type == "joined_chains":
+        names = []
+        joined_chain_sequences = []
+        for row in df.itertuples():
+            name = row.complex
+            names.append(name)
+            sequence = row.ag_chain_seq
+            sequence += "G" * GLYCINE_LINKER_LENGTH
+            sequence += row.ab_chain1_seq
+            if len(row.ab_chain) == 2:
+                sequence += "G" * GLYCINE_LINKER_LENGTH
+                sequence += row.ab_chain2_seq
+            joined_chain_sequences.append(sequence)
+        return names, joined_chain_sequences
+    else:
+        raise ValueError(f"Invalid sequence type: {sequence_type}")
 
 
 def parse_fasta_sequences(fasta_file: Path) -> tuple[list[str], list[str]]:
@@ -51,28 +78,12 @@ def parse_fasta_sequences(fasta_file: Path) -> tuple[list[str], list[str]]:
     return sequence_descriptions, sequence_strings
 
 
-def load_esm_model(
-    esm_model: str = "esm2_t33_650M_UR50D", hub_dir: str | None = None
-) -> tuple:
-    """Load an ESM2 model and batch converter.
-
-    :param esm_model: Pretrained ESM2 model to use. See options at https://github.com/facebookresearch/esm.
-    :param hub_dir: Path to directory where torch hub models are saved.
-    :return: A tuple of a pretrained ESM2 model and a BatchConverter for preparing protein sequences as input.
-    """
-    if hub_dir is not None:
-        torch.hub.set_dir(hub_dir)
-    model, alphabet = torch.hub.load("facebookresearch/esm:main", esm_model)
-    batch_converter = alphabet.get_batch_converter()
-    model.eval()
-    return model, alphabet, batch_converter
-
-
 def generate_esm_embeddings(
     model,
     last_layer: int,
     batch_converter,
     sequences: list[tuple[str, str]],
+    sequence_type: Literal["separate_chains", "joined_chains"],
     average_embeddings: bool = False,
     device: str = "cuda:0",
     batch_size: int = 32,
@@ -122,18 +133,24 @@ def generate_esm_embeddings(
                 if average_embeddings:
                     embedding = embedding.mean(dim=0)
 
-                name_to_embedding.setdefault(complex_id, {})[chain_id] = embedding
+                if sequence_type == "separate_chains":
+                    name_to_embedding.setdefault(complex_id, {})[chain_id] = embedding
+                elif sequence_type == "joined_chains":
+                    name_to_embedding[complex_id] = embedding
+                else:
+                    raise ValueError(f"Invalid sequence type: {sequence_type}")
 
     print(f"Time = {time() - start} seconds for {len(sequences):,} sequences")
     return name_to_embedding
 
 
 def generate_embeddings(
-    esm_model: str,
-    last_layer: int,
     save_path: Path,
+    sequences_path: Path,
+    sequence_type: Literal["separate_chains", "joined_chains"],
+    last_layer: int = 33,
+    esm_model: str = "esm2_t33_650M_UR50D",
     average_embeddings: bool = False,
-    sequences_path: Path | None = None,
     device: str = "cuda:0",
     batch_size: int = 32,
     hub_dir: str | None = None,
@@ -150,7 +167,7 @@ def generate_embeddings(
     :param hub_dir: Path to directory where torch hub models are saved.
     """
     # Load sequences
-    names, sequences = parse_csv_with_sequences(sequences_path)
+    names, sequences = parse_csv_with_sequences(sequences_path, sequence_type)
 
     # Print stats
     print(f"Number of sequences = {len(sequences):,}")
@@ -166,6 +183,7 @@ def generate_embeddings(
         last_layer=last_layer,
         batch_converter=batch_converter,
         sequences=list(zip(names, sequences)),
+        sequence_type=sequence_type,
         average_embeddings=average_embeddings,
         device=device,
         batch_size=batch_size,
@@ -177,23 +195,4 @@ def generate_embeddings(
 
 
 if __name__ == "__main__":
-
-    class Args(Tap):
-        esm_model: str
-        """Pretrained ESM2 model to use. See options at https://github.com/facebookresearch/esm."""
-        last_layer: int
-        """Last layer of the ESM2 model, which will be used to extract embeddings."""
-        save_path: Path
-        """Path to PT file where a dictionary mapping protein name to embeddings will be saved."""
-        average_embeddings: bool = False
-        """Whether to average the residue embeddings for each protein."""
-        sequences_path: Path
-        """Path to a file containing sequences."""
-        device: str = "cuda:0"
-        """The device to use (e.g., "cpu" or "cuda") for the model."""
-        batch_size: int = 32
-        """The number of sequences to process at once."""
-        hub_dir: str | None = None
-        """Path to directory where torch hub models are saved."""
-
-    generate_embeddings(**Args().parse_args().as_dict())
+    tapify(generate_embeddings)
