@@ -9,7 +9,6 @@ from typing import List, Optional, Tuple
 from torch.utils.data import Dataset, DataLoader
 
 
-
 class ModelJointChain_MLP(nn.Module):
 
     def __init__(
@@ -30,7 +29,8 @@ class ModelJointChain_MLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
             x = layer(x)
-        return x
+        return x.squeeze(-1)
+
 
 class SingleChain_MLP(nn.Module):
 

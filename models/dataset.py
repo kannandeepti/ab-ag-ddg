@@ -28,21 +28,23 @@ class AntibodyAntigenDataset(Dataset):
 
         for row in df.itertuples():
             name = row.complex
+            complex_id, mutation = name.split("_")
             ab_chain = row.ab_chain
             ag_chain = row.ag_chain
+            full_name = f"{complex_id}_{ab_chain}_{ag_chain}_{mutation}"
             ddg = row.labels
             if sequence_type == "separate_chains":
-                ag_chain_embedding = name_to_embeddings[name][ag_chain]
-                ab_chain1_embedding = name_to_embeddings[name][ab_chain[0]]
+                ag_chain_embedding = name_to_embeddings[full_name][ag_chain]
+                ab_chain1_embedding = name_to_embeddings[full_name][ab_chain[0]]
                 if len(ab_chain) > 1:
-                    ab_chain2_embedding = name_to_embeddings[name][ab_chain[1]]
+                    ab_chain2_embedding = name_to_embeddings[full_name][ab_chain[1]]
                 else:
                     ab_chain2_embedding = torch.zeros_like(ab_chain1_embedding)
                 embedding = torch.cat(
                     [ag_chain_embedding, ab_chain1_embedding, ab_chain2_embedding]
                 )
             elif sequence_type == "joined_chains":
-                embedding = name_to_embeddings[name]
+                embedding = name_to_embeddings[full_name]
             else:
                 raise ValueError(f"Invalid sequence type: {sequence_type}")
 

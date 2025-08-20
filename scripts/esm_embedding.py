@@ -20,6 +20,8 @@ def parse_csv_with_sequences(
     Parse a CSV file with sequences and extract sequence descriptions and sequences.
     """
     df = pd.read_csv(csv_path)
+    df = df.iloc[:100]
+
     if sequence_type == "separate_chains":
         # antibody chain 1
         ab_chain1_seqs = df["ab_chain1_seq"].tolist()
@@ -124,8 +126,7 @@ def generate_esm_embeddings(
 
             # Map sequence name to embedding
             for (name, sequence), embedding in zip(batch_sequences, batch_embeddings):
-                chain_id = name.split("_")[-1]
-                complex_id = name[:-2]
+
                 # NOTE: token 0 is always a beginning-of-sequence token, so the first residue is token 1
                 embedding = embedding[1 : len(sequence) + 1]
 
@@ -134,9 +135,11 @@ def generate_esm_embeddings(
                     embedding = embedding.mean(dim=0)
 
                 if sequence_type == "separate_chains":
+                    chain_id = name.split("_")[-1]
+                    complex_id = name[:-2]
                     name_to_embedding.setdefault(complex_id, {})[chain_id] = embedding
                 elif sequence_type == "joined_chains":
-                    name_to_embedding[complex_id] = embedding
+                    name_to_embedding[name] = embedding
                 else:
                     raise ValueError(f"Invalid sequence type: {sequence_type}")
 

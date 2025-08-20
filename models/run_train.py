@@ -104,12 +104,10 @@ def run_train(
     test_dataset, test_dataloader = create_dataset_and_dataloader(
         test_path, embedding_path, sequence_type, batch_size
     )
-
     model = ModelJointChain_MLP(
         input_dim=train_dataset.embeddings.shape[1],
         hidden_dim=hidden_dim,
         num_layers=num_layers,
-        device=device,
     )
     train_model(
         model, train_dataloader, val_dataloader, num_epochs, learning_rate, device
@@ -130,14 +128,12 @@ if __name__ == "__main__":
         test_path=Path(
             "ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_70_test.csv"
         ),
-        embedding_path=Path(
-            "ddg_synthetic/Flex_ddG/embeddings/embeddings_flexddg_joined_chains.pt"
-        ),
-        sequence_type="joined_chains",
+        embedding_path=Path("ddg_synthetic/Flex_ddG/embeddings/embeddings_flexddg.pt"),
+        sequence_type="separate_chains",
         hidden_dim=128,
-        num_layers=2,
+        num_layers=6,
         batch_size=128,
         num_epochs=100,
-        learning_rate=0.001,
+        learning_rate=0.01,
         device="cuda",
     )
