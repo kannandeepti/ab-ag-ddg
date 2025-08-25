@@ -1,7 +1,7 @@
 # Train models
 
-from models.model_base_class import ModelJointChain_MLP, Residue_Transformer
-from models.dataset import create_dataset_and_dataloader
+from ab_ag_ddg.model_base_class import ModelJointChain_MLP, Residue_Transformer
+from ab_ag_ddg.dataset import create_dataset_and_dataloader
 import torch
 import torch.nn as nn
 from pathlib import Path
@@ -19,9 +19,7 @@ def compute_param_norm(model: ModelJointChain_MLP):
 
 
 def compute_grad_norm(model: ModelJointChain_MLP):
-    return sum(
-        p.grad.data.norm().item() for p in model.parameters() if p.grad is not None
-    )
+    return sum(p.grad.data.norm().item() for p in model.parameters() if p.grad is not None)
 
 
 def compute_param_count(model: ModelJointChain_MLP):
@@ -53,9 +51,16 @@ def eval_model(
     true_y = []
     with torch.no_grad():
         for batch in eval_dataloader:
-            x, y = batch
-            x = x.to(device)
-            pred_y.append(model(x).cpu())
+            if isinstance(model, Residue_Transformer):
+                x, y, padding_mask, mut_indices = batch
+                x = x.to(device)
+                padding_mask = padding_mask.to(device)
+                mut_indices = mut_indices.to(device)
+                pred_y.append(model(x, padding_mask, mut_indices).cpu())
+            else:
+                x, y = batch
+                x = x.to(device)
+                pred_y.append(model(x).cpu())
             true_y.append(y)
     pred_y = torch.cat(pred_y)
     true_y = torch.cat(true_y)
@@ -86,20 +91,25 @@ def train_model(
     weight_decay: float = 0,
 ):
     model.to(device)
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=learning_rate, weight_decay=weight_decay
-    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     loss_fn = nn.MSELoss()
 
     for epoch in range(num_epochs):
         model.train()
         for batch in train_dataloader:
-            x, y, padding_mask = batch
+            if isinstance(model, Residue_Transformer):
+                x, y, padding_mask, mut_indices = batch
+                padding_mask = padding_mask.to(device)
+                mut_indices = mut_indices.to(device)
+            else:
+                x, y = batch
             x = x.to(device)
             y = y.to(device)
-            padding_mask = padding_mask.to(device)
             optimizer.zero_grad()
-            loss = loss_fn(model(x, padding_mask), y)
+            if isinstance(model, Residue_Transformer):
+                loss = loss_fn(model(x, padding_mask, mut_indices), y)
+            else:
+                loss = loss_fn(model(x), y)
             wandb.log({"Train Loss vs Batch": loss.item()})
             loss.backward()
             optimizer.step()
@@ -113,6 +123,7 @@ def train_model(
         eval_model(model, train_dataloader, "train", device)
         # evaluate on val set
         eval_model(model, val_dataloader, "val", device)
+        wandb.log({"Finished epoch #": epoch + 1})
     return model
 
 
@@ -122,48 +133,57 @@ def run_train(
     test_path: Path,
     mutant_embedding_path: Path,
     wt_embedding_path: Path,
+    split_type: Literal["70", "90", "100", "none"],
     model_type: Literal["MLP", "Residue_Transformer"],
     sequence_type: Literal["separate_chains", "joined_chains"],
+    pool_type: Literal["global_average", "mutant_residue"],
+    esm_model: Literal["650M", "8M"],
     hidden_dim: int,
-    num_layers: int,
-    dropout_rate: float,
     batch_size: int,
     num_epochs: int,
     learning_rate: float,
     device: str,
+    num_layers: int = 1,
+    dropout_rate: float = 0,
     weight_decay: float = 0,
-    clip_outliers: bool = False,
+    clip_outliers: bool = True,
     min_ddg: float = -10,
     max_ddg: float = 10,
 ):
+
+    if model_type == "MLP":
+        name = f"MLP_diff_{esm_model}_{sequence_type}_{hidden_dim}_{num_layers}_{learning_rate}_{dropout_rate}_{weight_decay}"
+    elif model_type == "Residue_Transformer":
+        name = f"Residue_Transformer_{esm_model}_{sequence_type}_{pool_type}_{split_type}_{weight_decay}"
     start_time = time.time()
-    # run = wandb.init(
-    #     # Set the wandb project where this run will be logged.
-    #     project="ab-ag-ddg",
-    #     name=f"MLP_diff_{sequence_type}_{hidden_dim}_{num_layers}_{learning_rate}_{dropout_rate}_{weight_decay}",
-    #     # Track hyperparameters and run metadata.
-    #     config={
-    #         "learning_rate": learning_rate,
-    #         "architecture": "MLP",
-    #         "dataset": "Flex_ddG",
-    #         "epochs": num_epochs,
-    #         "hidden_dim": hidden_dim,
-    #         "num_layers": num_layers,
-    #         "dropout_rate": dropout_rate,
-    #         "weight_decay": weight_decay,
-    #         "sequence_type": sequence_type,
-    #         "batch_size": batch_size,
-    #         "device": device,
-    #         "train_path": train_path,
-    #         "val_path": val_path,
-    #         "test_path": test_path,
-    #         "mutant_embedding_path": mutant_embedding_path,
-    #         "wt_embedding_path": wt_embedding_path,
-    #         "clip_outliers": clip_outliers,
-    #         "min_ddg": min_ddg,
-    #         "max_ddg": max_ddg,
-    #     },
-    # )
+    run = wandb.init(
+        # Set the wandb project where this run will be logged.
+        project="ab-ag-ddg",
+        name=name,
+        # Track hyperparameters and run metadata.
+        config={
+            "learning_rate": learning_rate,
+            "architecture": model_type,
+            "esm_model": esm_model,
+            "dataset": "Flex_ddG",
+            "epochs": num_epochs,
+            "hidden_dim": hidden_dim,
+            "num_layers": num_layers,
+            "dropout_rate": dropout_rate,
+            "weight_decay": weight_decay,
+            "sequence_type": sequence_type,
+            "batch_size": batch_size,
+            "device": device,
+            "train_path": train_path,
+            "val_path": val_path,
+            "test_path": test_path,
+            "mutant_embedding_path": mutant_embedding_path,
+            "wt_embedding_path": wt_embedding_path,
+            "clip_outliers": clip_outliers,
+            "min_ddg": min_ddg,
+            "max_ddg": max_ddg,
+        },
+    )
 
     train_dataset, train_dataloader = create_dataset_and_dataloader(
         train_path,
@@ -176,7 +196,6 @@ def run_train(
         min_ddg=min_ddg,
         max_ddg=max_ddg,
     )
-    breakpoint()
     val_dataset, val_dataloader = create_dataset_and_dataloader(
         val_path,
         mutant_embedding_path,
@@ -208,8 +227,9 @@ def run_train(
         )
     elif model_type == "Residue_Transformer":
         model = Residue_Transformer(
-            input_dim=train_dataset.embeddings.shape[2],
+            embedding_dim=train_dataset.embedding_dim,
             hidden_dim=hidden_dim,
+            pool_type=pool_type,
         )
     wandb.log({"Param Count": compute_param_count(model)})
     train_model(
@@ -232,29 +252,32 @@ def run_train_single_model(
     hidden_dim: int,
     learning_rate: float,
     model_type: Literal["MLP", "Residue_Transformer"],
+    split_type: Literal["70", "90", "100", "none"],
+    pool_type: Literal["global_average", "mutant_residue"],
+    esm_model: Literal["650M", "8M"],
     num_layers: int = 1,
     dropout_rate: float = 0,
     weight_decay: float = 0,
 ):
-
+    if esm_model == "650M":
+        mutant_embedding_path = Path("/home/dkannan/orcd/scratch/ab-ag-ddg/embeddings_joined_chains_mutants_res.pt")
+        wt_embedding_path = Path("/home/dkannan/orcd/scratch/ab-ag-ddg/embeddings_joined_chains_wt_res.pt")
+    elif esm_model == "8M":
+        mutant_embedding_path = Path("/home/dkannan/orcd/scratch/ab-ag-ddg/embeddings_joined_chains_mutants_res_8M.pt")
+        wt_embedding_path = Path("/home/dkannan/orcd/scratch/ab-ag-ddg/embeddings_joined_chains_wt_res_8M.pt")
+    else:
+        raise ValueError(f"Invalid ESM model: {esm_model}")
     train_path = Path(
-        "ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_70_train.csv"
+        f"ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_{split_type}_train.csv"
     )
-    val_path = Path(
-        "ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_70_val.csv"
-    )
+    val_path = Path(f"ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_{split_type}_val.csv")
     test_path = Path(
-        "ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_70_test.csv"
+        f"ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_{split_type}_test.csv"
     )
-    mutant_embedding_path = Path(
-        "/home/dkannan/orcd/scratch/ab-ag-ddg/embeddings_joined_chains_mutants_res.pt"
-    )
-    wt_embedding_path = Path(
-        "/home/dkannan/orcd/scratch/ab-ag-ddg/embeddings_joined_chains_wt_res.pt"
-    )
+
     sequence_type = "joined_chains"
-    batch_size = 128
-    num_epochs = 300
+    batch_size = 32
+    num_epochs = 30
     device = "cuda"
     run_train(
         train_path,
@@ -262,38 +285,30 @@ def run_train_single_model(
         test_path,
         mutant_embedding_path,
         wt_embedding_path,
-        "Residue_Transformer",
+        split_type,
+        model_type,
         sequence_type,
+        pool_type,
         hidden_dim,
-        num_layers,
-        dropout_rate,
         batch_size,
         num_epochs,
         learning_rate,
         device,
+        num_layers,
+        dropout_rate,
         weight_decay,
     )
 
 
-def hyperparameter_search():
+def hyperparameter_search_MLP():
     """
     Hyperparameter search for the MLP model.
     """
-    train_path = Path(
-        "ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_70_train.csv"
-    )
-    val_path = Path(
-        "ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_70_val.csv"
-    )
-    test_path = Path(
-        "ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_70_test.csv"
-    )
-    mutant_embedding_path = Path(
-        "ddg_synthetic/Flex_ddG/embeddings/embeddings_joined_chains_mutants.pt"
-    )
-    wt_embedding_path = Path(
-        "ddg_synthetic/Flex_ddG/embeddings/embeddings_joined_chains_wt.pt"
-    )
+    train_path = Path("ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_70_train.csv")
+    val_path = Path("ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_70_val.csv")
+    test_path = Path("ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_70_test.csv")
+    mutant_embedding_path = Path("ddg_synthetic/Flex_ddG/embeddings/embeddings_joined_chains_mutants.pt")
+    wt_embedding_path = Path("ddg_synthetic/Flex_ddG/embeddings/embeddings_joined_chains_wt.pt")
     sequence_type = "joined_chains"
     batch_size = 128
     dropout_rate = 0.2

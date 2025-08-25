@@ -10,7 +10,7 @@ from Bio import SeqIO
 from tap import Tap
 from tqdm import trange
 
-from utils import GLYCINE_LINKER_LENGTH, load_esm_model
+from ab_ag_ddg.utils import GLYCINE_LINKER_LENGTH, load_esm_model
 
 
 def mutate_sequence(sequence: str, mut_index: int, mut_aa: str) -> str:
@@ -47,25 +47,19 @@ def parse_and_mutate_sequences(
             names_ag.append(f"{row.complex}_{ag_chain}")
 
             if row.mut_chain == ag_chain and mutate:
-                ag_chain_sequences.append(
-                    mutate_sequence(row.ag_chain_seq, row.mut_index, mut_aa)
-                )
+                ag_chain_sequences.append(mutate_sequence(row.ag_chain_seq, row.mut_index, mut_aa))
             else:
                 ag_chain_sequences.append(row.ag_chain_seq)
 
             if row.mut_chain == ab_chain[0] and mutate:
-                ab_chain_1_sequences.append(
-                    mutate_sequence(row.ab_chain1_seq, row.mut_index, mut_aa)
-                )
+                ab_chain_1_sequences.append(mutate_sequence(row.ab_chain1_seq, row.mut_index, mut_aa))
             else:
                 ab_chain_1_sequences.append(row.ab_chain1_seq)
 
             if len(ab_chain) == 2:
                 names_ab2.append(f"{row.complex}_{ab_chain[1]}")
                 if row.mut_chain == ab_chain[1] and mutate:
-                    ab_chain_2_sequences.append(
-                        mutate_sequence(row.ab_chain2_seq, row.mut_index, mut_aa)
-                    )
+                    ab_chain_2_sequences.append(mutate_sequence(row.ab_chain2_seq, row.mut_index, mut_aa))
                 else:
                     ab_chain_2_sequences.append(row.ab_chain2_seq)
         names = names_ag + names_ab1 + names_ab2
@@ -87,16 +81,9 @@ def parse_and_mutate_sequences(
             if row.mut_chain == ag_chain:
                 mut_index = row.mut_index
             elif row.mut_chain == ab_chain[0]:
-                mut_index = (
-                    len(row.ag_chain_seq) + GLYCINE_LINKER_LENGTH + row.mut_index
-                )
+                mut_index = len(row.ag_chain_seq) + GLYCINE_LINKER_LENGTH + row.mut_index
             elif row.mut_chain == ab_chain[1]:
-                mut_index = (
-                    len(row.ag_chain_seq)
-                    + len(row.ab_chain1_seq)
-                    + 2 * GLYCINE_LINKER_LENGTH
-                    + row.mut_index
-                )
+                mut_index = len(row.ag_chain_seq) + len(row.ab_chain1_seq) + 2 * GLYCINE_LINKER_LENGTH + row.mut_index
             if mutate:
                 sequences.append(mutate_sequence(sequence, mut_index, mut_aa))
             else:
@@ -160,9 +147,7 @@ def generate_esm_embeddings(
             batch_tokens = batch_tokens.to(device)
 
             # Compute embeddings
-            results = model(
-                batch_tokens, repr_layers=[last_layer], return_contacts=False
-            )
+            results = model(batch_tokens, repr_layers=[last_layer], return_contacts=False)
 
             # Get per-residue embeddings
             batch_embeddings = results["representations"][last_layer].cpu()
@@ -195,7 +180,6 @@ def generate_embeddings(
     sequences_path: Path,
     sequence_type: Literal["separate_chains", "joined_chains"],
     mutate: bool = False,
-    last_layer: int = 33,
     esm_model: str = "esm2_t33_650M_UR50D",
     average_embeddings: bool = False,
     device: str = "cuda:0",
@@ -221,9 +205,8 @@ def generate_embeddings(
     print(f"Number of sequences = {len(sequences):,}")
 
     # Load ESM-2 model
-    model, alphabet, batch_converter = load_esm_model(
-        hub_dir=hub_dir, esm_model=esm_model
-    )
+    last_layer = int(esm_model.split("_")[1][1:])
+    model, alphabet, batch_converter = load_esm_model(hub_dir=hub_dir, esm_model=esm_model)
 
     # Generate embeddings
     sequence_representations = generate_esm_embeddings(

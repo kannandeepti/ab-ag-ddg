@@ -15,7 +15,7 @@ from tqdm import tqdm, trange
 from scipy.stats import spearmanr
 from matplotlib import pyplot as plt
 
-from utils import GLYCINE_LINKER_LENGTH
+from utils import GLYCINE_LINKER_LENGTH, get_mut_index_in_triple_chain
 
 
 def parse_df_with_sequences(
@@ -45,22 +45,7 @@ def parse_df_with_sequences(
             mut_indices.append(row.mut_index)
 
         elif sequence_type == "triple_chain":
-            if row.mut_chain == ag_chain:
-                mut_index = row.mut_index
-            elif row.mut_chain == ab_chain[0]:
-                mut_index = (
-                    len(row.ag_chain_seq) + GLYCINE_LINKER_LENGTH + row.mut_index
-                )
-            elif row.mut_chain == ab_chain[1]:
-                mut_index = (
-                    len(row.ag_chain_seq)
-                    + len(row.ab_chain1_seq)
-                    + 2 * GLYCINE_LINKER_LENGTH
-                    + row.mut_index
-                )
-            else:
-                raise ValueError(f"Invalid mutation chain: {row.mut_chain}")
-            mut_indices.append(mut_index)
+            mut_indices.append(get_mut_index_in_triple_chain(row))
             sequence = row.ag_chain_seq
             sequence += "G" * GLYCINE_LINKER_LENGTH
             sequence += row.ab_chain1_seq
@@ -87,9 +72,7 @@ def generate_likelihood_ratios(
     """
     # Load ESM-2 model
     model, alphabet, batch_converter = load_esm_model()
-    names, sequences, mut_indices, wt_aas, mut_aas = parse_df_with_sequences(
-        ddg_df, sequence_type
-    )
+    names, sequences, mut_indices, wt_aas, mut_aas = parse_df_with_sequences(ddg_df, sequence_type)
     sequence_tuples = list(zip(names, sequences))
 
     # Move model to device
@@ -102,26 +85,18 @@ def generate_likelihood_ratios(
         for i in trange(0, len(sequence_tuples), batch_size):
             # Get batch of sequences
             batch_sequence_tuples = sequence_tuples[i : i + batch_size]
-            batch_labels, batch_strs, batch_tokens = batch_converter(
-                batch_sequence_tuples
-            )
+            batch_labels, batch_strs, batch_tokens = batch_converter(batch_sequence_tuples)
             batch_mut_indices = torch.tensor(mut_indices[i : i + batch_size])
             batch_wt_aas = wt_aas[i : i + batch_size]
-            batch_wt_aas = torch.tensor(
-                [alphabet.get_idx(wt_aa) for wt_aa in batch_wt_aas]
-            )
+            batch_wt_aas = torch.tensor([alphabet.get_idx(wt_aa) for wt_aa in batch_wt_aas])
             batch_mut_aas = mut_aas[i : i + batch_size]
-            batch_mut_aas = torch.tensor(
-                [alphabet.get_idx(mut_aa) for mut_aa in batch_mut_aas]
-            )
+            batch_mut_aas = torch.tensor([alphabet.get_idx(mut_aa) for mut_aa in batch_mut_aas])
             batch_tokens[:, batch_mut_indices] = alphabet.mask_idx
 
             batch_token_probs = torch.log_softmax(
                 model(batch_tokens.to(device))["logits"], dim=-1
             )  # shape: (batch_size, seq_len, vocab_size)
-            batch_token_probs = batch_token_probs[
-                :, 1:, :
-            ]  # remove beginning-of-sequence token
+            batch_token_probs = batch_token_probs[:, 1:, :]  # remove beginning-of-sequence token
 
             # For each row in the batch, extract the log-probability at the mutation index for the WT and mutant amino acid
             batch_indices = torch.arange(batch_tokens.size(0))
@@ -137,50 +112,88 @@ def generate_likelihood_ratios(
     return name_to_likelihood_ratio
 
 
-def compare_ddg_to_likelihood_ratios(
-    name_to_likelihood_ratio: dict[str, float],
+def compare_ddg_to_zero_shot_preds(
+    name_to_pred: dict[str, float],
     ddg_df: pd.DataFrame,
+    method: Literal["likelihood_ratio", "embedding_diff"],
     sequence_type: Literal["single_chain", "triple_chain"],
 ) -> None:
     """Compare likelihood ratios to ddG values."""
 
-    likelihood_ratios = []
+    zero_shot_preds = []
     ddgs = []
 
     for row in ddg_df.itertuples():
         name = row.complex
+        if name not in name_to_pred:
+            continue
         ddg = row.labels
-        likelihood_ratio = name_to_likelihood_ratio[name]
-        likelihood_ratios.append(likelihood_ratio)
-        ddgs.append(ddg)
+        pred = name_to_pred[name]
+        zero_shot_preds.append(pred)
+        if method == "embedding_diff":
+            ddgs.append(abs(ddg))
+        else:
+            ddgs.append(ddg)
 
     # compute spearman correlation
-    correlation, p_value = spearmanr(likelihood_ratios, ddgs)
+    correlation, p_value = spearmanr(zero_shot_preds, ddgs)
     print(f"Spearman correlation: {correlation:.4f}")
     print(f"P-value: {p_value:.4f}")
 
-    # plot scatter plot of likelihood ratios vs ddGs
-    plt.scatter(likelihood_ratios, ddgs)
-    plt.xlabel("Likelihood ratio")
+    # plot scatter plot of predictions vs ddGs
+    plt.scatter(zero_shot_preds, ddgs)
+    plt.xlabel("Zero-shot ESM-2 prediction")
     plt.ylabel("ddG")
     plt.title(f"Zero-shot ESM-2 ddG prediction, {sequence_type} sequences")
     # add line of best fit
 
-    plt.savefig(f"plots/likelihood_ratios_vs_ddgs_{sequence_type}.png")
+    plt.savefig(f"plots/{method}s_vs_ddgs_{sequence_type}.png")
+
+
+def zero_shot_embedding_diffs(
+    ddg_df: pd.DataFrame,
+    embedding_wt_path: Path,
+    embedding_mut_path: Path,
+    sequence_type: Literal["single_chain", "triple_chain"],
+) -> None:
+    """Get the euclidean distance of the embedding differences for the mutated residue and the non-mutated residues."""
+    embedding_wt = torch.load(embedding_wt_path)
+    embedding_mut = torch.load(embedding_mut_path)
+    name_to_mutant_diff_norm = {}
+    for row in ddg_df.itertuples():
+        complex_id = row.complex
+        mut_index = get_mut_index_in_triple_chain(row)
+        if complex_id not in embedding_mut:
+            continue
+        embedding_diff = embedding_mut[complex_id] - embedding_wt[complex_id]
+        embed_diff_norms = embedding_diff.norm(dim=1)
+        if embed_diff_norms[mut_index].item() < 1:
+            breakpoint()
+        name_to_mutant_diff_norm[complex_id] = embed_diff_norms[mut_index].item()
+    return name_to_mutant_diff_norm
 
 
 def zero_shot_esm_ddg(
-    data_path: Path,
     sequence_type: Literal["single_chain", "triple_chain"],
+    method: Literal["likelihood_ratio", "embedding_diff"],
+    data_path: Path = "ddg_synthetic/Flex_ddG/Synthetic_FlexddG_ddG_20829_with_sequences.csv",
+    embedding_wt_path: Path | None = "/home/dkannan/orcd/scratch/ab-ag-ddg/embeddings_joined_chains_wt_res_100.pt",
+    embedding_mut_path: Path | None = "/home/dkannan/orcd/scratch/ab-ag-ddg/embeddings_joined_chains_mutants_res_100.pt",
     batch_size: int = 32,
     device: str = "cuda",
 ) -> None:
 
     ddg_df = pd.read_csv(data_path)
-    name_to_likelihood_ratio = generate_likelihood_ratios(
-        ddg_df, sequence_type, batch_size, device
-    )
-    compare_ddg_to_likelihood_ratios(name_to_likelihood_ratio, ddg_df, sequence_type)
+    if method == "likelihood_ratio":
+        name_to_likelihood_ratio = generate_likelihood_ratios(ddg_df, sequence_type, batch_size, device)
+        compare_ddg_to_zero_shot_preds(name_to_likelihood_ratio, ddg_df, method, sequence_type)
+    elif method == "embedding_diff":
+        if embedding_wt_path is None or embedding_mut_path is None:
+            raise ValueError("embedding_wt_path and embedding_mut_path must be provided for embedding_diff method")
+        name_to_mutant_diff_norm = zero_shot_embedding_diffs(
+            ddg_df, embedding_wt_path, embedding_mut_path, sequence_type
+        )
+        compare_ddg_to_zero_shot_preds(name_to_mutant_diff_norm, ddg_df, method, sequence_type)
 
 
 if __name__ == "__main__":

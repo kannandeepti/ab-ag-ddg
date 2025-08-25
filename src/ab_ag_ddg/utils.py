@@ -1,4 +1,5 @@
 import torch
+import pandas as pd
 
 # Amino acid constants
 AA_ALPHABET = "ACDEFGHIKLMNPQRSTVWY"
@@ -22,3 +23,22 @@ def load_esm_model(
     batch_converter = alphabet.get_batch_converter()
     model.eval()
     return model, alphabet, batch_converter
+
+
+def get_mut_index_in_triple_chain(
+    row: pd.Series,
+) -> int:
+    """Get the mutated index in the triple chain from the mutated index in the single chain."""
+    if row.mut_chain == row.ag_chain:
+        return row.mut_index
+    if row.mut_chain == row.ab_chain[0]:
+        return len(row.ag_chain_seq) + GLYCINE_LINKER_LENGTH + row.mut_index
+    elif row.mut_chain == row.ab_chain[1]:
+        return (
+            len(row.ag_chain_seq)
+            + len(row.ab_chain1_seq)
+            + 2 * GLYCINE_LINKER_LENGTH
+            + row.mut_index
+        )
+    else:
+        raise ValueError(f"Invalid mutation chain: {row.mut_chain}")

@@ -6,6 +6,8 @@ from torch.nn.modules.module import T
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
 
+from models.utils import get_mut_index_in_triple_chain
+
 
 class AntibodyAntigenDataset(Dataset):
     """Custom Dataset for antibody/antigen embeddings."""
@@ -31,28 +33,27 @@ class AntibodyAntigenDataset(Dataset):
 
         embeddings = []
         labels = []
+        mut_indices = []
 
         for row in df.itertuples():
             name = row.complex
-            complex_id, mutation = name.split("_")
-            ab_chain = row.ab_chain
-            ag_chain = row.ag_chain
-            full_name = f"{complex_id}_{ab_chain}_{ag_chain}_{mutation}"
             ddg = row.labels
             try:
                 if sequence_type == "separate_chains":
+                    # TODO: fix mut_index for separate chains
+                    mut_index = row.mut_index
                     ag_chain_embedding = (
-                        name_to_mutant_embeddings[full_name][ag_chain]
-                        - name_to_wt_embeddings[full_name][ag_chain]
+                        name_to_mutant_embeddings[name][row.ag_chain]
+                        - name_to_wt_embeddings[name][row.ag_chain]
                     )
                     ab_chain1_embedding = (
-                        name_to_mutant_embeddings[full_name][ab_chain[0]]
-                        - name_to_wt_embeddings[full_name][ab_chain[0]]
+                        name_to_mutant_embeddings[name][row.ab_chain[0]]
+                        - name_to_wt_embeddings[name][row.ab_chain[0]]
                     )
-                    if len(ab_chain) > 1:
+                    if len(row.ab_chain) > 1:
                         ab_chain2_embedding = (
-                            name_to_mutant_embeddings[full_name][ab_chain[1]]
-                            - name_to_wt_embeddings[full_name][ab_chain[1]]
+                            name_to_mutant_embeddings[name][row.ab_chain[1]]
+                            - name_to_wt_embeddings[name][row.ab_chain[1]]
                         )
                     else:
                         ab_chain2_embedding = torch.zeros_like(ab_chain1_embedding)
@@ -61,31 +62,39 @@ class AntibodyAntigenDataset(Dataset):
                         [ag_chain_embedding, ab_chain1_embedding, ab_chain2_embedding]
                     )
                 elif sequence_type == "joined_chains":
+                    mut_index = get_mut_index_in_triple_chain(row)
                     embedding = (
-                        name_to_mutant_embeddings[full_name]
-                        - name_to_wt_embeddings[full_name]
+                        name_to_mutant_embeddings[name] - name_to_wt_embeddings[name]
                     )
                 else:
                     raise ValueError(f"Invalid sequence type: {sequence_type}")
             except Exception as e:
-                breakpoint()
+                # print(f"Error with {name}: {e}")
+                # breakpoint()
+                continue
 
             embeddings.append(embedding)
             labels.append(ddg)
+            mut_indices.append(mut_index)
 
         self.embeddings = embeddings
         self.labels = labels
+        self.mut_indices = mut_indices
         # self.embeddings = torch.stack(embeddings)
         # self.labels = torch.tensor(labels)
         if clip_outliers:
-            self.labels = self.labels.clamp(min_ddg, max_ddg)
+            self.labels = torch.tensor(self.labels).clamp(min_ddg, max_ddg)
+
+    @property
+    def embedding_dim(self):
+        return self.embeddings[0].shape[1]
 
     def __len__(self):
         return len(self.embeddings)
 
     def __getitem__(self, idx):
         # Return tuple of embeddings for this index
-        return self.embeddings[idx], self.labels[idx]
+        return self.embeddings[idx], self.labels[idx], self.mut_indices[idx]
 
 
 def collate_batch(batch: list) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -95,7 +104,7 @@ def collate_batch(batch: list) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor
     Returns:
         Tuple of (padded_embeddings, labels, padding_mask)
     """
-    embeddings, labels = zip(*batch)
+    embeddings, labels, mut_indices = zip(*batch)
     lengths = torch.tensor([len(e) for e in embeddings])
     max_length = lengths.max()
     arange = torch.arange(max_length).unsqueeze(0)  # (1, max_length)
@@ -103,7 +112,12 @@ def collate_batch(batch: list) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor
         1
     )  # (B, max_length)
     padded_embeddings = pad_sequence(embeddings, batch_first=True, padding_value=0.0)
-    return padded_embeddings, torch.stack(labels), padding_mask
+    return (
+        padded_embeddings,
+        torch.tensor(labels),
+        padding_mask,
+        torch.tensor(mut_indices),
+    )
 
 
 def create_dataset_and_dataloader(
@@ -141,7 +155,7 @@ def create_dataset_and_dataloader(
         min_ddg,
         max_ddg,
     )
-    breakpoint()
+    print(f"Number of samples: {len(dataset)}")
     # Create dataloader
     dataloader = DataLoader(
         dataset,
@@ -150,19 +164,4 @@ def create_dataset_and_dataloader(
         num_workers=num_workers,
         collate_fn=collate_batch,
     )
-    breakpoint()
     return dataset, dataloader
-
-
-if __name__ == "__main__":
-    dataset = create_dataset_and_dataloader(
-        Path(
-            "ddg_synthetic/Flex_ddG/cdr_seqid_cutoffs/Synthetic_FlexddG_ddG_20829-cutoff_70_train.csv"
-        ),
-        Path(
-            "/home/dkannan/orcd/scratch/ab-ag-ddg/embeddings_joined_chains_mutants_res.pt"
-        ),
-        Path("/home/dkannan/orcd/scratch/ab-ag-ddg/embeddings_joined_chains_wt_res.pt"),
-        "joined_chains",
-        batch_size=128,
-    )
