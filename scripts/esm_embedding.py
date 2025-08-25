@@ -13,52 +13,95 @@ from tqdm import trange
 from utils import GLYCINE_LINKER_LENGTH, load_esm_model
 
 
-def parse_csv_with_sequences(
-    csv_path: Path, sequence_type: Literal["separate_chains", "joined_chains"]
+def mutate_sequence(sequence: str, mut_index: int, mut_aa: str) -> str:
+    """Mutate a sequence at a given index with a given amino acid."""
+    if mut_index == 0:
+        return mut_aa + sequence[1:]
+    elif mut_index == len(sequence) - 1:
+        return sequence[:-1] + mut_aa
+    else:
+        return sequence[:mut_index] + mut_aa + sequence[mut_index + 1 :]
+
+
+def parse_and_mutate_sequences(
+    df: pd.DataFrame,
+    sequence_type: Literal["separate_chains", "joined_chains"],
+    mutate: bool = True,
 ) -> tuple[list[str], list[str]]:
     """
     Parse a CSV file with sequences and extract sequence descriptions and sequences.
     """
-    df = pd.read_csv(csv_path)
-    df = df.iloc[:100]
-
     if sequence_type == "separate_chains":
-        # antibody chain 1
-        ab_chain1_seqs = df["ab_chain1_seq"].tolist()
-        names_ab_chain1 = [
-            f"{row.complex}_{row.ab_chain[0]}" for row in df.itertuples()
-        ]
-        # antibody chain 2
-        df2 = df.dropna(subset="ab_chain2_seq")
-        ab_chain2_seqs = df2["ab_chain2_seq"].tolist()
-        names_ab_chain2 = [
-            f"{row.complex}_{row.ab_chain[1]}" for row in df2.itertuples()
-        ]
-        # antigen chain
-        ag_chains = df["ag_chain_seq"].tolist()
-        names_ag = [f"{row.complex}_{row.ag_chain}" for row in df.itertuples()]
+        (
+            names_ab1,
+            names_ab2,
+            names_ag,
+            ab_chain_1_sequences,
+            ab_chain_2_sequences,
+            ag_chain_sequences,
+        ) = ([], [], [], [], [], [])
+        for row in df.itertuples():
+            pdb_id, ab_chain, ag_chain, mutation = row.complex.split("_")
+            mut_aa = mutation[-1]
+            names_ab1.append(f"{row.complex}_{ab_chain[0]}")
+            names_ag.append(f"{row.complex}_{ag_chain}")
 
-        # combine a single list of names and sequences
-        names = names_ab_chain1 + names_ab_chain2 + names_ag
-        sequences = ab_chain1_seqs + ab_chain2_seqs + ag_chains
+            if row.mut_chain == ag_chain and mutate:
+                ag_chain_sequences.append(
+                    mutate_sequence(row.ag_chain_seq, row.mut_index, mut_aa)
+                )
+            else:
+                ag_chain_sequences.append(row.ag_chain_seq)
+
+            if row.mut_chain == ab_chain[0] and mutate:
+                ab_chain_1_sequences.append(
+                    mutate_sequence(row.ab_chain1_seq, row.mut_index, mut_aa)
+                )
+            else:
+                ab_chain_1_sequences.append(row.ab_chain1_seq)
+
+            if len(ab_chain) == 2:
+                names_ab2.append(f"{row.complex}_{ab_chain[1]}")
+                if row.mut_chain == ab_chain[1] and mutate:
+                    ab_chain_2_sequences.append(
+                        mutate_sequence(row.ab_chain2_seq, row.mut_index, mut_aa)
+                    )
+                else:
+                    ab_chain_2_sequences.append(row.ab_chain2_seq)
+        names = names_ag + names_ab1 + names_ab2
+        sequences = ag_chain_sequences + ab_chain_1_sequences + ab_chain_2_sequences
         return names, sequences
 
     elif sequence_type == "joined_chains":
-        names = []
-        joined_chain_sequences = []
+        names, sequences = [], []
         for row in df.itertuples():
-            name = row.complex
-            names.append(name)
+            pdb_id, ab_chain, ag_chain, mutation = row.complex.split("_")
+            mut_aa = mutation[-1]
+            names.append(f"{row.complex}")
             sequence = row.ag_chain_seq
             sequence += "G" * GLYCINE_LINKER_LENGTH
             sequence += row.ab_chain1_seq
-            if len(row.ab_chain) == 2:
+            if len(ab_chain) == 2:
                 sequence += "G" * GLYCINE_LINKER_LENGTH
                 sequence += row.ab_chain2_seq
-            joined_chain_sequences.append(sequence)
-        return names, joined_chain_sequences
-    else:
-        raise ValueError(f"Invalid sequence type: {sequence_type}")
+            if row.mut_chain == ag_chain:
+                mut_index = row.mut_index
+            elif row.mut_chain == ab_chain[0]:
+                mut_index = (
+                    len(row.ag_chain_seq) + GLYCINE_LINKER_LENGTH + row.mut_index
+                )
+            elif row.mut_chain == ab_chain[1]:
+                mut_index = (
+                    len(row.ag_chain_seq)
+                    + len(row.ab_chain1_seq)
+                    + 2 * GLYCINE_LINKER_LENGTH
+                    + row.mut_index
+                )
+            if mutate:
+                sequences.append(mutate_sequence(sequence, mut_index, mut_aa))
+            else:
+                sequences.append(sequence)
+        return names, sequences
 
 
 def parse_fasta_sequences(fasta_file: Path) -> tuple[list[str], list[str]]:
@@ -151,6 +194,7 @@ def generate_embeddings(
     save_path: Path,
     sequences_path: Path,
     sequence_type: Literal["separate_chains", "joined_chains"],
+    mutate: bool = False,
     last_layer: int = 33,
     esm_model: str = "esm2_t33_650M_UR50D",
     average_embeddings: bool = False,
@@ -170,7 +214,8 @@ def generate_embeddings(
     :param hub_dir: Path to directory where torch hub models are saved.
     """
     # Load sequences
-    names, sequences = parse_csv_with_sequences(sequences_path, sequence_type)
+    df = pd.read_csv(sequences_path)
+    names, sequences = parse_and_mutate_sequences(df, sequence_type, mutate)
 
     # Print stats
     print(f"Number of sequences = {len(sequences):,}")
