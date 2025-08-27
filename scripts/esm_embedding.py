@@ -109,6 +109,59 @@ def parse_fasta_sequences(fasta_file: Path) -> tuple[list[str], list[str]]:
 
     return sequence_descriptions, sequence_strings
 
+def generate_esm_contact_maps(
+    model,
+    last_layer: int,
+    batch_converter,
+    sequences: list[tuple[str, str]],
+    sequence_type: Literal["separate_chains", "joined_chains"],
+    device: str = "cuda:0",
+    batch_size: int = 32,
+):
+    """Generate contact maps using an ESM2 model from https://github.com/facebookresearch/esm."""
+    # Move model to device
+    model = model.to(device)
+
+    # Compute all embeddings
+    start = time()
+    name_to_embedding = {}
+
+    with torch.no_grad():
+        # Iterate over batches of sequences
+        for i in trange(0, len(sequences), batch_size):
+            # Get batch of sequences
+            batch_sequences = sequences[i : i + batch_size]
+            batch_labels, batch_strs, batch_tokens = batch_converter(batch_sequences)
+            batch_tokens = batch_tokens.to(device)
+
+            # Compute embeddings
+            contact_maps = model.predict_contacts(batch_tokens)
+            breakpoint()
+
+            # Get per-residue embeddings
+            batch_embeddings = results["representations"][last_layer].cpu()
+
+            # Map sequence name to embedding
+            for (name, sequence), embedding in zip(batch_sequences, batch_embeddings):
+
+                # NOTE: token 0 is always a beginning-of-sequence token, so the first residue is token 1
+                embedding = embedding[1 : len(sequence) + 1]
+
+                # Optionally average embeddings for each sequence
+                if average_embeddings:
+                    embedding = embedding.mean(dim=0)
+
+                if sequence_type == "separate_chains":
+                    chain_id = name.split("_")[-1]
+                    complex_id = name[:-2]
+                    name_to_embedding.setdefault(complex_id, {})[chain_id] = embedding
+                elif sequence_type == "joined_chains":
+                    name_to_embedding[name] = embedding
+                else:
+                    raise ValueError(f"Invalid sequence type: {sequence_type}")
+
+    print(f"Time = {time() - start} seconds for {len(sequences):,} sequences")
+    return name_to_embedding
 
 def generate_esm_embeddings(
     model,
@@ -175,10 +228,11 @@ def generate_esm_embeddings(
     return name_to_embedding
 
 
-def generate_embeddings(
+def generate_embeddings_or_contact_maps(
     save_path: Path,
     sequences_path: Path,
     sequence_type: Literal["separate_chains", "joined_chains"],
+    output_type: Literal["embeddings", "contact_maps"],
     mutate: bool = False,
     esm_model: str = "esm2_t33_650M_UR50D",
     average_embeddings: bool = False,
@@ -209,16 +263,27 @@ def generate_embeddings(
     model, alphabet, batch_converter = load_esm_model(hub_dir=hub_dir, esm_model=esm_model)
 
     # Generate embeddings
-    sequence_representations = generate_esm_embeddings(
-        model=model,
-        last_layer=last_layer,
-        batch_converter=batch_converter,
-        sequences=list(zip(names, sequences)),
-        sequence_type=sequence_type,
-        average_embeddings=average_embeddings,
-        device=device,
-        batch_size=batch_size,
-    )
+    if output_type == "embeddings":
+        sequence_representations = generate_esm_embeddings(
+            model=model,
+            last_layer=last_layer,
+            batch_converter=batch_converter,
+            sequences=list(zip(names, sequences)),
+            sequence_type=sequence_type,
+            average_embeddings=average_embeddings,
+            device=device,
+            batch_size=batch_size,
+        )
+    elif output_type == "contact_maps":
+        sequence_representations = generate_esm_contact_maps(
+            model=model,
+            last_layer=last_layer,
+            batch_converter=batch_converter,
+            sequences=list(zip(names, sequences)),
+            sequence_type=sequence_type,
+            device=device,
+            batch_size=batch_size,
+        )
 
     # Save embeddings
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -226,4 +291,4 @@ def generate_embeddings(
 
 
 if __name__ == "__main__":
-    tapify(generate_embeddings)
+    tapify(generate_embeddings_or_contact_maps)
