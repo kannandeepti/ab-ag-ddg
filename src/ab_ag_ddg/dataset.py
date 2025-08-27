@@ -6,7 +6,7 @@ from torch.nn.modules.module import T
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
 
-from models.utils import get_mut_index_in_triple_chain
+from ab_ag_ddg.utils import get_mut_index_in_triple_chain
 
 
 class AntibodyAntigenDataset(Dataset):

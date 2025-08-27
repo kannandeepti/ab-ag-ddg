@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools >= 61.0.0", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ab-ag-ddg"
+dynamic = ["version"]
+authors = [
+    {name = "Deepti Kannan", email = "dkannan@mit.edu" },
+    {name = "Kyle Swanson", email = "swansonk.14@gmail.com" },
+]
+maintainers = [
+    {name = "Deepti Kannan", email = "dkannan@mit.edu" },
+    {name = "Kyle Swanson", email = "swansonk.14@gmail.com" },
+]
+description = "ML methods to predict ddG values for antibody-antigen complexes"
+readme = "README.md"
+license = { file = "LICENSE.txt" }
+dependencies = [
+]
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
+]
+keywords = [
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "ab_ag_ddg.__version__"}
+
+[tool.setuptools.package-data]
+ab_ag_ddg = ["py.typed"]
+
+[tool.black]
+line-length = 121
+
+[project.urls]
+Homepage = "https://github.com/kannandeepti/ab-ag-ddg"

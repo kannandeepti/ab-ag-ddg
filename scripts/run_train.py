@@ -166,6 +166,8 @@ def run_train(
             "architecture": model_type,
             "esm_model": esm_model,
             "dataset": "Flex_ddG",
+            "pool_type" : pool_type,
+            "split_type" : split_type,
             "epochs": num_epochs,
             "hidden_dim": hidden_dim,
             "num_layers": num_layers,
@@ -233,13 +235,13 @@ def run_train(
         )
     wandb.log({"Param Count": compute_param_count(model)})
     train_model(
-        model,
-        train_dataloader,
-        val_dataloader,
-        num_epochs,
-        learning_rate,
-        device,
-        weight_decay,
+        model=model,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
+        num_epochs=num_epochs,
+        learning_rate=learning_rate,
+        device=device,
+        weight_decay=weight_decay,
     )
     eval_model(model, test_dataloader, "test", device, plot_scatter=True)
     eval_model(model, val_dataloader, "val", device, plot_scatter=True)
@@ -280,23 +282,24 @@ def run_train_single_model(
     num_epochs = 30
     device = "cuda"
     run_train(
-        train_path,
-        val_path,
-        test_path,
-        mutant_embedding_path,
-        wt_embedding_path,
-        split_type,
-        model_type,
-        sequence_type,
-        pool_type,
-        hidden_dim,
-        batch_size,
-        num_epochs,
-        learning_rate,
-        device,
-        num_layers,
-        dropout_rate,
-        weight_decay,
+        train_path=train_path,
+        val_path=val_path,
+        test_path=test_path,
+        mutant_embedding_path=mutant_embedding_path,
+        wt_embedding_path=wt_embedding_path,
+        split_type=split_type,
+        model_type=model_type,
+        sequence_type=sequence_type,
+        pool_type=pool_type,
+        esm_model=esm_model,
+        hidden_dim=hidden_dim,
+        batch_size=batch_size,
+        num_epochs=num_epochs,
+        learning_rate=learning_rate,
+        device=device,
+        num_layers=num_layers,
+        dropout_rate=dropout_rate,
+        weight_decay=weight_decay,
     )
 
 
