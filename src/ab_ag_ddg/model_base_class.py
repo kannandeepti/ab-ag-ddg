@@ -1,4 +1,4 @@
-""" Create an abstract PyTorch model class that can be used to train and evaluate models. """
+"""Create MLP and Transformer models on top of ESM embeddings for predicting ΔΔG."""
 
 from abc import ABC, abstractmethod
 from pathlib import Path
